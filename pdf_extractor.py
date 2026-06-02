@@ -104,6 +104,13 @@ def extract_data_from_pdf(file_stream, filename):
                     for i, line in enumerate(lines):
                         # Procura no texto não-decodificado para evitar falsos positivos
                         if piece_name.upper() in line.upper():
+                            upper_line = line.upper()
+                            # Ignora o carimbo de plotagem lateral do CAD e o próprio nome do arquivo
+                            if ".PLT" in upper_line or ".DWG" in upper_line or "RUY BENTES" in upper_line:
+                                continue
+                            if clean_filename.upper() in upper_line:
+                                continue
+                                
                             if best_line_idx == -1 or len(line) > len(lines[best_line_idx]):
                                 best_line_idx = i
                                 
