@@ -123,11 +123,16 @@ def extract_data_from_pdf(file_stream, filename):
                         descricao = titulo_principal
                         
                         # Pega o subtítulo ao redor (agora decodificado!)
-                        if best_line_idx > 0:
-                            prev_line = lines[best_line_idx-1].strip()
-                            if len(prev_line) > 3 and not prev_line.startswith("(cid:") and " (1x)" not in prev_line and " (2x)" not in prev_line:
-                                if "FORMA" in prev_line.upper() or "ARMA" in prev_line.upper():
-                                    descricao = f"{titulo_principal} - {prev_line}"
+                        for offset in [1, -1, 2, -2]:
+                            idx = best_line_idx + offset
+                            if 0 <= idx < len(lines):
+                                adj_line = lines[idx].strip()
+                                if len(adj_line) > 3 and not adj_line.startswith("(cid:"):
+                                    # Palavras comuns na "Linha B" (complemento do título)
+                                    keywords = ["FORMA", "ARMA", "DETALHE", "PLANTA", "CORTE", "ELEVA", "MONTAGEM"]
+                                    if any(k in adj_line.upper() for k in keywords):
+                                        descricao = f"{titulo_principal} - {adj_line}"
+                                        break
                                     
         except Exception as e:
             print(f"Erro PyMuPDF no arquivo {filename}: {e}")
