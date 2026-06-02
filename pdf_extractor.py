@@ -111,12 +111,14 @@ def extract_data_from_pdf(file_stream, filename):
                         titulo_principal = lines[best_line_idx].strip()
                         descricao = titulo_principal
                         
-                        # Decodifica APENAS as linhas adjacentes para evitar corrupção do título principal
                         for offset in [1, -1, 2, -2]:
                             idx = best_line_idx + offset
                             if 0 <= idx < len(lines):
-                                adj_line = lines[idx].strip()
-                                adj_decoded = decode_pymupdf_garbage(adj_line)
+                                # Não faz o strip() ainda! Decodifica a linha bruta primeiro,
+                                # senão o strip() apaga o caracter de espaço/form-feed que o CAD
+                                # mapeou incorretamente como o fecha-parênteses ')' !!
+                                raw_adj_line = lines[idx]
+                                adj_decoded = decode_pymupdf_garbage(raw_adj_line).strip()
                                 
                                 if len(adj_decoded) > 3 and adj_decoded != piece_name:
                                     keywords = ["FORMA", "ARMA", "DETALHE", "PLANTA", "CORTE", "ELEVA", "MONTAGEM"]

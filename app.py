@@ -64,11 +64,13 @@ if st.button("Gerar Relatório (Word)", type="primary"):
                 if dados:
                     arquivos_extraidos.append(dados)
             
-            # Processar destinatários (remover linhas vazias)
+            # Processar destinatários (remover linhas vazias e lidar com NaNs)
             destinatarios = []
             for _, row in edited_destinatarios.iterrows():
-                if row['nome']:
-                    destinatarios.append({"nome": row['nome'], "empresa": row['empresa']})
+                nome_val = str(row['nome']).strip() if pd.notna(row['nome']) else ""
+                emp_val = str(row['empresa']).strip() if pd.notna(row['empresa']) else ""
+                if nome_val and nome_val.lower() != "nan":
+                    destinatarios.append({"nome": nome_val, "empresa": emp_val})
                     
             # Contexto para o template
             context = {
