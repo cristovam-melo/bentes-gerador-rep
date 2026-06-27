@@ -41,6 +41,15 @@ def _extract_title_block_descricao(raw_text):
               'REVISÃO', 'REVISAO', 'VERIFICAÇÃO', 'VERIFICACAO',
               'ESCALA', 'OBRA N.', 'FOLHA N.'}
 
+    # Lines that are noise from the notes/observations block - should never be description
+    NOISE_RE = re.compile(
+        r'MEDIDAS EM|NOTAS E OBSERV|CARACTER[IÍ]STICAS DO CONCRETO|'
+        r'CLASSE \(NBR|Rela[cç][aã]o a/c|'
+        r'TAXA DE A[CÇ]O|COBRIMENTO SOBRE|VOLUME / PESO|'
+        r'NA DESFORMA|^\s*GPa|^\s*MPa|Ec\s+GPa',
+        re.IGNORECASE
+    )
+
     meaningful = []
     for j in range(folha_idx + 1, len(lines)):
         line = lines[j].strip()
@@ -59,31 +68,83 @@ def _extract_title_block_descricao(raw_text):
 
     # Support P (Pilar), V (Viga), L (Laje), F (Fundação), D (Detalhe), M (Montagem), etc.
     PIECE_LINE_RE = re.compile(r'\b(?:P|V|L|F|D|M|PR|VS|BL|SC)(?:[0-9OOM]{2,4})\b', re.IGNORECASE)
+
+    # TYPE_RE matches the structural type: FORMA, ARMAÇÃO, etc.
+    # PAVILHÃO is NOT a type — it's a location prefix, handled separately
     TYPE_RE = re.compile(
-        r'\b(FORMA|ARMA(?:ÇÃO|ÇAO|CAO)?|VIGA|DETALHE|PLANTA|CORTE|ELEVA(?:ÇÃO|ÇAO|CAO)?|MONTAGEM|DEXA|PAVILH(?:ÃO|AO)?)\b',
+        r'\b(FORMA|ARMA(?:ÇÃO|ÇAO|CAO)?|VIGA|DETALHE|PLANTA|CORTE|ELEVA(?:ÇÃO|ÇAO|CAO)?|MONTAGEM|DEXA)\b',
         re.IGNORECASE
     )
 
+    # LOCATION_RE matches the location prefix (e.g. PAVILHÃO 2)
+    LOCATION_RE = re.compile(
+        r'\bPAVILH[ÃA]O\b',
+        re.IGNORECASE
+    )
+
+    # FORMA_ARMACAO_RE specifically matches the "FORMA E ARMAÇÃO (Nx)" pattern
+    FORMA_ARMACAO_RE = re.compile(
+        r'FORMA\s+E?\s*ARMA[CÇ][AÃ]O\s*\(\d+x\)',
+        re.IGNORECASE
+    )
+
+    description_line = None
+    forma_line = None
+
+    for idx, line in enumerate(meaningful):
+        # Skip noise lines
+        if NOISE_RE.search(line):
+            continue
+
+        has_piece = PIECE_LINE_RE.search(line)
+        has_location = LOCATION_RE.search(line)
+        has_forma = FORMA_ARMACAO_RE.search(line)
+        has_type = TYPE_RE.search(line)
+
+        # Best case: line has location + piece + forma all together
+        # e.g. "PAVILHÃO 2 - P10 - FORMA E ARMAÇÃO (1x)"
+        if has_location and has_piece and has_forma:
+            return line
+
+        # Line has location + piece (e.g. "PAVILHÃO 2 - P10")
+        # Look ahead for the FORMA E ARMAÇÃO line
+        if has_location and has_piece:
+            description_line = line
+            # Search the next few meaningful lines for FORMA E ARMAÇÃO
+            for k in range(idx + 1, min(idx + 4, len(meaningful))):
+                next_line = meaningful[k]
+                if FORMA_ARMACAO_RE.search(next_line):
+                    forma_line = next_line
+                    break
+            if description_line:
+                break
+
+        # Line has piece + type but NOT location (e.g. "V207=V217 - FORMA E ARMAÇÃO (2x)")
+        if has_piece and has_type and not has_location:
+            if not NOISE_RE.search(line):
+                description_line = line
+                break
+
+    if description_line:
+        if forma_line:
+            return f"{description_line} - {forma_line}"
+        return description_line
+
+    # Second pass: look for piece-only line and type-only line separately
     piece_line = None
     type_line = None
-    complete_line = None
 
     for line in meaningful:
+        if NOISE_RE.search(line):
+            continue
         has_piece = PIECE_LINE_RE.search(line)
         has_type = TYPE_RE.search(line)
-        
-        if has_piece and has_type:
-            complete_line = line
-            break
-        elif has_piece:
-            if not piece_line or len(line) > len(piece_line):
-                piece_line = line
-        elif has_type:
-            if "COBRIMENTO SOBRE" not in line.upper() and "TAXA DE" not in line.upper():
-                type_line = line
 
-    if complete_line:
-        return complete_line
+        if has_piece and not piece_line:
+            piece_line = line
+        elif has_type and not has_piece:
+            if not type_line:
+                type_line = line
 
     if piece_line and type_line:
         if type_line.upper() in piece_line.upper():
@@ -204,6 +265,10 @@ def extract_data_from_pdf(file_stream, filename):
             if name_without_ext.startswith(numero_folha + "-"):
                 name_without_ext = name_without_ext[len(numero_folha) + 1:]
             descricao = name_without_ext
+
+    # Normalize multiple whitespace in description (PDF text extraction artifacts)
+    if descricao:
+        descricao = re.sub(r'\s{2,}', ' ', descricao).strip()
 
     return {
         "arquivo": arquivo,

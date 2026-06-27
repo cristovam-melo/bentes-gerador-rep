@@ -7,6 +7,12 @@ import os
 
 st.set_page_config(page_title="Gerador REP - Bentes", layout="wide")
 
+# Inicializar o estado de sessão para acumular os arquivos carregados
+if "arquivos_acumulados" not in st.session_state:
+    st.session_state.arquivos_acumulados = []
+if "uploader_key" not in st.session_state:
+    st.session_state.uploader_key = 0
+
 st.title("Gerador de Registro de Envio de Projetos (REP)")
 st.subheader("Preencha as informações e faça upload das plantas (PDFs)")
 
@@ -47,23 +53,95 @@ edited_destinatarios = st.data_editor(
 
 st.markdown("---")
 st.subheader("Plantas / Projetos (Upload de PDFs)")
-uploaded_files = st.file_uploader("Selecione as plantas em formato PDF", type=['pdf'], accept_multiple_files=True)
 
-if st.button("Gerar Relatório (Word)", type="primary"):
+# File uploader com chave dinâmica baseada no estado de sessão para permitir limpeza
+uploaded_files = st.file_uploader(
+    "Selecione as plantas em formato PDF", 
+    type=['pdf'], 
+    accept_multiple_files=True,
+    key=f"uploader_{st.session_state.uploader_key}"
+)
+
+# Se arquivos novos foram selecionados, processa e acumula em session_state
+if uploaded_files:
+    for pdf_file in uploaded_files:
+        # Evita duplicados na lista de acumulados
+        if not any(item["arquivo"] == pdf_file.name for item in st.session_state.arquivos_acumulados):
+            dados = extract_data_from_pdf(pdf_file, pdf_file.name)
+            if dados:
+                st.session_state.arquivos_acumulados.append(dados)
+
+# Mostra a lista dos arquivos atualmente acumulados em uma tabela estilizada
+if st.session_state.arquivos_acumulados:
+    st.markdown(f"**Arquivos adicionados ({len(st.session_state.arquivos_acumulados)}):**")
+    df_files = pd.DataFrame([
+        {
+            "Arquivo": item["arquivo"], 
+            "Nº Folha": item["numero_folha"], 
+            "Descrição Folha": item["descricao"], 
+            "Data Folha": item["data_folha"]
+        } for item in st.session_state.arquivos_acumulados
+    ])
+    st.dataframe(df_files, use_container_width=True, hide_index=True)
+
+# Grid de botões: Gerar Relatório, Limpar Seleção, Fazer Outro Upload
+# Ajustado para 3 colunas de igual tamanho (1:1:1) para alinhar perfeitamente com os campos acima
+st.markdown("""
+<style>
+button[aria-label="Limpar Seleção"] {
+    background-color: #f5f5f5 !important;
+    color: #5f6368 !important;
+    border: 1px solid #dadce0 !important;
+    transition: background-color 0.2s, color 0.2s !important;
+}
+button[aria-label="Limpar Seleção"]:hover {
+    background-color: #faeedb !important;
+    color: #b06000 !important;
+    border: 1px solid #ff9800 !important;
+}
+button[aria-label="Fazer Outro Upload"] {
+    background-color: #e8f0fe !important;
+    color: #1a73e8 !important;
+    border: 1px solid #d2e3fc !important;
+    transition: background-color 0.2s, color 0.2s !important;
+}
+button[aria-label="Fazer Outro Upload"]:hover {
+    background-color: #1a73e8 !important;
+    color: white !important;
+    border: 1px solid #1a73e8 !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+col_btn1, col_btn2, col_btn3 = st.columns(3)
+
+with col_btn1:
+    btn_generate = st.button("Gerar Relatório (Word)", type="primary", use_container_width=True)
+
+with col_btn2:
+    btn_clear = st.button("Limpar Seleção", use_container_width=True)
+
+with col_btn3:
+    btn_more = st.button("Fazer Outro Upload", use_container_width=True)
+
+# Ação do botão de Limpar
+if btn_clear:
+    st.session_state.arquivos_acumulados = []
+    st.session_state.uploader_key += 1
+    st.rerun()
+
+# Ação do botão de Fazer Outro Upload (reinicia o uploader na tela para liberar o botão principal)
+if btn_more:
+    st.session_state.uploader_key += 1
+    st.rerun()
+
+if btn_generate:
     if not remetente or not obra:
         st.warning("Preencha os campos 'De (Remetente)' e 'Obra'.")
-    elif not uploaded_files:
+    elif not st.session_state.arquivos_acumulados:
         st.warning("Faça o upload de pelo menos um arquivo PDF.")
     else:
         with st.spinner("Processando PDFs e gerando documento..."):
-            
-            # Processar PDFs
-            arquivos_extraidos = []
-            for pdf_file in uploaded_files:
-                dados = extract_data_from_pdf(pdf_file, pdf_file.name)
-                if dados:
-                    arquivos_extraidos.append(dados)
-            
             # Processar destinatários (remover linhas vazias e lidar com NaNs)
             destinatarios = []
             for _, row in edited_destinatarios.iterrows():
@@ -80,7 +158,7 @@ if st.button("Gerar Relatório (Word)", type="primary"):
                 "cliente": cliente,
                 "obra": obra,
                 "destinatarios": destinatarios,
-                "arquivos": arquivos_extraidos
+                "arquivos": st.session_state.arquivos_acumulados
             }
             
             # Gerar Word
