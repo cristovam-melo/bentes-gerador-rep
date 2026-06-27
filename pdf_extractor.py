@@ -61,13 +61,15 @@ def _extract_title_block_descricao(raw_text):
             continue
         if re.match(r'^\d+(?:[.,]\d+)?\s*(?:mm|cm|m)$', line):
             continue
+        if NOISE_RE.search(line):
+            continue
         meaningful.append(line)
 
     if len(meaningful) < 5:
         return None
 
     # Support P (Pilar), V (Viga), L (Laje), F (Fundação), D (Detalhe), M (Montagem), etc.
-    PIECE_LINE_RE = re.compile(r'\b(?:P|V|L|F|D|M|PR|VS|BL|SC)(?:[0-9OOM]{2,4})\b', re.IGNORECASE)
+    PIECE_LINE_RE = re.compile(r'\b(?:P|V|L|F|D|M|PR|VS|BL|SC)(?:[0-9OOM]{1,4})\b', re.IGNORECASE)
 
     # TYPE_RE matches the structural type: FORMA, ARMAÇÃO, etc.
     # PAVILHÃO is NOT a type — it's a location prefix, handled separately
