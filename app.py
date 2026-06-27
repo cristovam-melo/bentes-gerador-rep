@@ -84,7 +84,7 @@ if st.button("Gerar Relatório (Word)", type="primary"):
             }
             
             # Gerar Word
-            template_path = "template.docx"
+            template_path = os.path.join(os.path.dirname(__file__), "template.docx")
             if not os.path.exists(template_path):
                 st.error("Erro: Arquivo 'template.docx' não encontrado. Por favor, certifique-se de que o script auxiliar gerou o template.")
             else:
@@ -93,7 +93,9 @@ if st.button("Gerar Relatório (Word)", type="primary"):
                 if docx_buffer:
                     st.success("Relatório gerado com sucesso!")
                     
-                    file_name_out = f"REP_{numero_rep}_{obra}.docx".replace(" ", "_")
+                    import unicodedata
+                    clean_obra = unicodedata.normalize('NFKD', obra).encode('ascii', 'ignore').decode('ascii')
+                    file_name_out = f"REP_{numero_rep}_{clean_obra}.docx".replace(" ", "_")
                     
                     st.download_button(
                         label="⬇️ Baixar Arquivo Word (.docx)",

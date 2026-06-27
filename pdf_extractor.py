@@ -1,7 +1,6 @@
-import pdfplumber
-import fitz
 import re
-import os
+import io
+import fitz
 
 def decode_pymupdf_garbage(text):
     if not text: return ""
@@ -27,120 +26,184 @@ def parse_pdf_date(date_str):
         return f"{day}/{month}/{year}"
     return ""
 
+def _extract_title_block_descricao(raw_text):
+    lines = raw_text.split('\n')
+
+    folha_idx = None
+    for i, line in enumerate(lines):
+        if 'FOLHA N.' in line:
+            folha_idx = i
+            break
+    if folha_idx is None:
+        return None
+
+    LABELS = {'CLIENTE', 'OBRA', 'DATA', 'TITULO', 'DESENHO',
+              'REVISÃO', 'REVISAO', 'VERIFICAÇÃO', 'VERIFICACAO',
+              'ESCALA', 'OBRA N.', 'FOLHA N.'}
+
+    meaningful = []
+    for j in range(folha_idx + 1, len(lines)):
+        line = lines[j].strip()
+        if not line:
+            continue
+        if line in LABELS:
+            continue
+        if re.match(r'^A[0-9]$', line):
+            continue
+        if re.match(r'^\d+(?:[.,]\d+)?\s*(?:mm|cm|m)$', line):
+            continue
+        meaningful.append(line)
+
+    if len(meaningful) < 5:
+        return None
+
+    # Support P (Pilar), V (Viga), L (Laje), F (Fundação), D (Detalhe), M (Montagem), etc.
+    PIECE_LINE_RE = re.compile(r'\b(?:P|V|L|F|D|M|PR|VS|BL|SC)(?:[0-9OOM]{2,4})\b', re.IGNORECASE)
+    TYPE_RE = re.compile(
+        r'\b(FORMA|ARMA(?:ÇÃO|ÇAO|CAO)?|VIGA|DETALHE|PLANTA|CORTE|ELEVA(?:ÇÃO|ÇAO|CAO)?|MONTAGEM|DEXA|PAVILH(?:ÃO|AO)?)\b',
+        re.IGNORECASE
+    )
+
+    piece_line = None
+    type_line = None
+    complete_line = None
+
+    for line in meaningful:
+        has_piece = PIECE_LINE_RE.search(line)
+        has_type = TYPE_RE.search(line)
+        
+        if has_piece and has_type:
+            complete_line = line
+            break
+        elif has_piece:
+            if not piece_line or len(line) > len(piece_line):
+                piece_line = line
+        elif has_type:
+            if "COBRIMENTO SOBRE" not in line.upper() and "TAXA DE" not in line.upper():
+                type_line = line
+
+    if complete_line:
+        return complete_line
+
+    if piece_line and type_line:
+        if type_line.upper() in piece_line.upper():
+            return piece_line
+        return f"{piece_line} - {type_line}"
+
+    if piece_line:
+        return piece_line
+
+    # Fallback to the original logic
+    verific_idx = -1
+    for idx in range(len(meaningful) - 1, -1, -1):
+        val = meaningful[idx]
+        if re.match(r'^[A-ZÀ-Ú]{1,5}$', val) and idx >= min(4, len(meaningful) - 2):
+            verific_idx = idx
+            break
+
+    if verific_idx >= 0:
+        desenho_parts = []
+        if verific_idx > 0:
+            line_before = meaningful[verific_idx - 1]
+            if line_before and not re.match(r'^\d+$', line_before):
+                if verific_idx > 1:
+                    line_before2 = meaningful[verific_idx - 2]
+                    if not re.search(r'\d+/\d+\s+F\d{3,4}|\d{2}/\d{2}/\d{4}', line_before2):
+                        return f"{line_before2} - {line_before}"
+                return line_before
+
+        DESENHO_RE = re.compile(
+            r'^(?:P\d{2,4}\s*-(?!.*PLT)|\bFORMA\b|\bARMA(?:ÇÃO|CAO)?\b|\bVIGA\b|\bDETALHE\b|\bPLANTA\b|\bCORTE\b|'
+            r'\bELEVA\b|\bMONTAGEM\b|\bDEXA\b|\bPAVILH\b)',
+            re.IGNORECASE
+        )
+
+        for part in meaningful[verific_idx + 1:]:
+            if DESENHO_RE.search(part):
+                desenho_parts.append(part)
+            elif desenho_parts:
+                break
+            if len(desenho_parts) >= 2:
+                break
+
+        if desenho_parts:
+            return ' - '.join(desenho_parts)
+
+    # Fallback: try to extract TITULO directly via regex
+    titulo_match = re.search(
+        r'TITULO\s+OBRA N\.\s+FOLHA N\.\s+REVIS[ÃA]O\s*\n.*?\n(.*?)\s+([\w/]+)\s+([A-Z0-9]+)\s*\n.*?\n(.*?)\s+[A-Z]+\s*$',
+        raw_text, re.MULTILINE | re.IGNORECASE
+    )
+    if titulo_match:
+        titulo1 = titulo_match.group(1).strip()
+        titulo2 = titulo_match.group(4).strip()
+        if titulo2 and titulo2 != titulo1:
+            return f"{titulo1} - {titulo2}"
+        return titulo1
+
+    return None
+
+def _extract_date_from_pymupdf(doc, raw_text):
+    date_pattern = r"\b(0[1-9]|[12][0-9]|3[01])/(0[1-9]|1[0-2])/(\d{4}|\d{2})\b"
+    match = re.search(date_pattern, raw_text)
+    if match:
+        return match.group(0)
+
+    decoded = decode_pymupdf_garbage(raw_text)
+    match = re.search(date_pattern, decoded)
+    if match:
+        return match.group(0)
+
+    mod_date = doc.metadata.get("modDate") or doc.metadata.get("creationDate")
+    if mod_date:
+        return parse_pdf_date(mod_date)
+
+    return ""
+
 def extract_data_from_pdf(file_stream, filename):
     file_stream.seek(0)
     pdf_bytes = file_stream.read()
-    
-    text_normal = ""
-    text_layout = ""
-    try:
-        import io
-        temp_stream = io.BytesIO(pdf_bytes)
-        with pdfplumber.open(temp_stream) as pdf:
-            first_page = pdf.pages[0]
-            text_normal = first_page.extract_text() or ""
-            text_layout = first_page.extract_text(layout=True) or ""
-    except Exception as e:
-        print(f"Erro pdfplumber: {e}")
 
     arquivo = filename
     numero_folha = ""
     descricao = ""
     data_folha = ""
-    
+
     clean_filename = re.sub(r'\.pdf$', '', filename, flags=re.IGNORECASE)
     parts = clean_filename.split('-')
     if parts:
         numero_folha = parts[0]
-        
-    date_pattern = r"\b(0[1-9]|[12][0-9]|3[01])/(0[1-9]|1[0-2])/(\d{4}|\d{2})\b"
-    match_data = re.search(date_pattern, text_normal + "\n" + text_layout)
-    if match_data:
-        data_folha = match_data.group(0)
 
-    match_titulo = re.search(r'TITULO\s+OBRA N\.\s+FOLHA N\.\s+REVIS[ÃA]O\s*\n[^\n]{0,100}\n(.*?)\s+([\w/]+)\s+([A-Z0-9]+)\s*\n[^\n]{0,100}\n(.*?)\s+[A-Z]+\s*$', text_normal, re.MULTILINE | re.IGNORECASE)
-    if match_titulo:
-        titulo1 = match_titulo.group(1).strip()
-        folha_n = match_titulo.group(3).strip()
-        titulo2 = match_titulo.group(4).strip()
-        
-        if not numero_folha or len(numero_folha) < 2:
-            numero_folha = folha_n
-            
-        descricao = f"{titulo1} - {titulo2}"
-        if clean_filename in descricao or len(descricao) < 5:
-            descricao = ""
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        page = doc[0]
+        raw_text = page.get_text("text")
 
-    # PyMuPDF Heuristic para a Descrição (preserva espaços!) e fallback de data
-    if not descricao or "TITULO" not in descricao or not data_folha:
-        try:
-            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-            page = doc[0]
-            raw_text = page.get_text("text")
-            
-            # Decodifica texto completo apenas para procurar a data
-            fitz_text_decoded = decode_pymupdf_garbage(raw_text)
-            
-            if not data_folha:
-                match_data_fitz = re.search(date_pattern, fitz_text_decoded)
-                if match_data_fitz:
-                    data_folha = match_data_fitz.group(0)
-            
-            if not data_folha:
-                mod_date = doc.metadata.get("modDate") or doc.metadata.get("creationDate")
-                data_folha = parse_pdf_date(mod_date)
-            
-            if not descricao or "TITULO" not in descricao:
-                piece_name = ""
-                if len(parts) >= 2:
-                    if parts[-1].startswith('R') and parts[-1][1:].isdigit():
-                        piece_name = parts[-2]
-                    else:
-                        piece_name = parts[-1]
-                    
-                if piece_name:
-                    lines = raw_text.split('\n')
-                    best_line_idx = -1
-                    for i, line in enumerate(lines):
-                        # Procura no texto não-decodificado para evitar falsos positivos
-                        if piece_name.upper() in line.upper():
-                            upper_line = line.upper()
-                            # Ignora o carimbo de plotagem lateral do CAD e o próprio nome do arquivo
-                            if ".PLT" in upper_line or ".DWG" in upper_line or "RUY BENTES" in upper_line:
-                                continue
-                            if clean_filename.upper() in upper_line:
-                                continue
-                                
-                            if best_line_idx == -1 or len(line) > len(lines[best_line_idx]):
-                                best_line_idx = i
-                                
-                    if best_line_idx != -1:
-                        titulo_principal = lines[best_line_idx].strip()
-                        descricao = titulo_principal
-                        
-                        for offset in [1, -1, 2, -2]:
-                            idx = best_line_idx + offset
-                            if 0 <= idx < len(lines):
-                                # Não faz o strip() ainda! Decodifica a linha bruta primeiro,
-                                # senão o strip() apaga o caracter de espaço/form-feed que o CAD
-                                # mapeou incorretamente como o fecha-parênteses ')' !!
-                                raw_adj_line = lines[idx]
-                                adj_decoded = decode_pymupdf_garbage(raw_adj_line).strip()
-                                
-                                if len(adj_decoded) > 3 and adj_decoded != piece_name:
-                                    keywords = ["FORMA", "ARMA", "DETALHE", "PLANTA", "CORTE", "ELEVA", "MONTAGEM"]
-                                    if any(k in adj_decoded.upper() for k in keywords):
-                                        descricao = f"{titulo_principal} - {adj_decoded}"
-                                        break
-                                    
-        except Exception as e:
-            print(f"Erro PyMuPDF no arquivo {filename}: {e}")
+        data_folha = _extract_date_from_pymupdf(doc, raw_text)
+
+        descricao = _extract_title_block_descricao(raw_text)
+
+        if not descricao:
+            decoded = decode_pymupdf_garbage(raw_text)
+            descricao = _extract_title_block_descricao(decoded)
+
+    except Exception as e:
+        print(f"Erro PyMuPDF no arquivo {filename}: {e}")
 
     if not descricao:
-        name_without_ext = clean_filename
-        if name_without_ext.startswith(numero_folha + "-"):
-            name_without_ext = name_without_ext[len(numero_folha)+1:]
-        descricao = name_without_ext
+        piece_name = ""
+        if len(parts) >= 2:
+            if parts[-1].startswith('R') and parts[-1][1:].isdigit():
+                piece_name = parts[-2]
+            else:
+                piece_name = parts[-1]
+        if piece_name:
+            descricao = piece_name
+        else:
+            name_without_ext = clean_filename
+            if name_without_ext.startswith(numero_folha + "-"):
+                name_without_ext = name_without_ext[len(numero_folha) + 1:]
+            descricao = name_without_ext
 
     return {
         "arquivo": arquivo,
