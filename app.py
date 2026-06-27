@@ -13,6 +13,7 @@ tema_escuro = st.sidebar.toggle("Tema Escuro", value=True)
 if tema_escuro:
     bg_color = "#0e1117"
     text_color = "rgb(23, 154, 73)"
+    input_text_color = "#808495"
     input_bg = "rgba(23, 154, 73, 0.05)"
     input_border = "rgba(23, 154, 73, 0.3)"
     btn_primary_bg = "rgb(23, 154, 73)"
@@ -20,6 +21,7 @@ if tema_escuro:
 else:
     bg_color = "#ffffff"
     text_color = "#000000"
+    input_text_color = "#000000"
     input_bg = "#f9f9f9"
     input_border = "#cccccc"
     btn_primary_bg = "rgb(23, 154, 73)"
@@ -137,7 +139,7 @@ st.markdown(f"""
         background-color: {input_bg} !important;
         border: 1px solid {input_border} !important;
         border-radius: 8px !important;
-        color: {text_color} !important;
+        color: {input_text_color} !important;
         box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.05);
         transition: all 0.3s ease;
     }}
