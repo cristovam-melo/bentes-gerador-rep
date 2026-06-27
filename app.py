@@ -7,13 +7,50 @@ import os
 
 st.set_page_config(page_title="Gerador REP - Bentes", layout="wide")
 
+st.sidebar.title("Configurações")
+tema_escuro = st.sidebar.toggle("Tema Escuro", value=True)
+
+if tema_escuro:
+    bg_color = "#0e1117"
+    text_color = "rgb(23, 154, 73)"
+    input_bg = "rgba(23, 154, 73, 0.05)"
+    input_border = "rgba(23, 154, 73, 0.3)"
+    btn_primary_bg = "rgb(23, 154, 73)"
+    btn_primary_text = "white"
+else:
+    bg_color = "#ffffff"
+    text_color = "#000000"
+    input_bg = "#f9f9f9"
+    input_border = "#cccccc"
+    btn_primary_bg = "rgb(23, 154, 73)"
+    btn_primary_text = "white"
+
+
 # Inicializar o estado de sessão para acumular os arquivos carregados
 if "arquivos_acumulados" not in st.session_state:
     st.session_state.arquivos_acumulados = []
 if "uploader_key" not in st.session_state:
     st.session_state.uploader_key = 0
+if "num_destinatarios" not in st.session_state:
+    st.session_state.num_destinatarios = 1
 
-st.title("Gerador de Registro de Envio de Projetos (REP)")
+import os
+import base64
+
+if os.path.exists("logo.png"):
+    with open("logo.png", "rb") as image_file:
+        encoded_string = base64.b64encode(image_file.read()).decode()
+    st.markdown(
+        f"""
+        <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 20px;">
+            <img src="data:image/png;base64,{encoded_string}" style="width: 350px; border-radius: 0px;">
+            <h1 style="margin: 0; padding: 0; font-size: 2.2rem;">Relatório de Envio de Projeto (REP)</h1>
+        </div>
+        """, 
+        unsafe_allow_html=True
+    )
+else:
+    st.title("Relatório de Envio de Projeto (REP)")
 st.subheader("Preencha as informações e faça upload das plantas (PDFs)")
 
 # Form layout
@@ -32,24 +69,21 @@ with col3:
 
 st.markdown("---")
 st.subheader("Destinatários")
-# Tabela de destinatários
-default_destinatarios = pd.DataFrame(
-    [
-        {"nome": "", "empresa": ""},
-        {"nome": "", "empresa": ""}
-    ]
-)
 
-# Usa o editor de dados do Streamlit, permitindo adicionar linhas
-edited_destinatarios = st.data_editor(
-    default_destinatarios,
-    num_rows="dynamic",
-    column_config={
-        "nome": st.column_config.TextColumn("Nome / Destinatário", required=True),
-        "empresa": st.column_config.TextColumn("Empresa")
-    },
-    hide_index=True
-)
+destinatarios_list = []
+for i in range(st.session_state.num_destinatarios):
+    c1, c2 = st.columns(2)
+    with c1:
+        n = st.text_input(f"Nome / Destinatário {i+1}", key=f"dest_nome_{i}", placeholder="Ex: João Silva")
+    with c2:
+        e = st.text_input(f"Empresa {i+1}", key=f"dest_emp_{i}", placeholder="Ex: Construtora Alfa")
+    
+    if n.strip():
+        destinatarios_list.append({"nome": n.strip(), "empresa": e.strip()})
+
+if st.button("➕ Adicionar outro destinatário", key="add_dest", type="secondary"):
+    st.session_state.num_destinatarios += 1
+    st.rerun()
 
 st.markdown("---")
 st.subheader("Plantas / Projetos (Upload de PDFs)")
@@ -86,30 +120,86 @@ if st.session_state.arquivos_acumulados:
 
 # Grid de botões: Gerar Relatório, Limpar Seleção, Fazer Outro Upload
 # Ajustado para 3 colunas de igual tamanho (1:1:1) para alinhar perfeitamente com os campos acima
-st.markdown("""
+st.markdown(f"""
 <style>
-button[aria-label="Limpar Seleção"] {
-    background-color: #f5f5f5 !important;
-    color: #5f6368 !important;
-    border: 1px solid #dadce0 !important;
-    transition: background-color 0.2s, color 0.2s !important;
-}
-button[aria-label="Limpar Seleção"]:hover {
-    background-color: #faeedb !important;
-    color: #b06000 !important;
-    border: 1px solid #ff9800 !important;
-}
-button[aria-label="Fazer Outro Upload"] {
-    background-color: #e8f0fe !important;
-    color: #1a73e8 !important;
-    border: 1px solid #d2e3fc !important;
-    transition: background-color 0.2s, color 0.2s !important;
-}
-button[aria-label="Fazer Outro Upload"]:hover {
-    background-color: #1a73e8 !important;
-    color: white !important;
-    border: 1px solid #1a73e8 !important;
-}
+    /* Base Background */
+    .stApp {{
+        background-color: {bg_color} !important;
+    }}
+    
+    /* Global Text Color */
+    h1, h2, h3, p, span, div, label, .stMarkdown, .stText {{
+        color: {text_color} !important;
+    }}
+
+    /* Inputs & data editor panels */
+    .stTextInput>div>div>input {{
+        background-color: {input_bg} !important;
+        border: 1px solid {input_border} !important;
+        border-radius: 8px !important;
+        color: {text_color} !important;
+        box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.05);
+        transition: all 0.3s ease;
+    }}
+    .stTextInput>div>div>input:focus {{
+        border-color: {btn_primary_bg} !important;
+        box-shadow: 0 0 0 1px {btn_primary_bg} !important;
+    }}
+    
+    /* Upload Box */
+    .stFileUploader>div>div>div>div>div {{
+        border: 2px dashed {input_border} !important;
+        border-radius: 12px !important;
+        background-color: {input_bg} !important;
+        transition: all 0.3s ease;
+    }}
+    .stFileUploader>div>div>div>div>div:hover {{
+        border-color: {btn_primary_bg} !important;
+    }}
+
+    /* Primary Button (Gerar Relatório) */
+    button[kind="primary"] {{
+        background: {btn_primary_bg} !important;
+        color: {btn_primary_text} !important;
+        border: none !important;
+        border-radius: 8px !important;
+        transition: all 0.3s ease !important;
+    }}
+    button[kind="primary"]:hover {{
+        transform: translateY(-2px);
+        box-shadow: 0 4px 15px rgba(23, 154, 73, 0.4) !important;
+    }}
+    
+    /* ALL Buttons Typography */
+    div[data-testid="stButton"] button p {{
+        text-transform: uppercase !important;
+        font-weight: bold !important;
+        letter-spacing: 1px !important;
+    }}
+    
+    /* Secondary Buttons Styling */
+    button[kind="secondary"] {{
+        background-color: transparent !important;
+        border: 1px solid {input_border} !important;
+        border-radius: 8px !important;
+        transition: all 0.3s ease !important;
+    }}
+    button[kind="secondary"]:hover {{
+        background-color: {input_bg} !important;
+        transform: translateY(-1px);
+    }}
+    
+    /* DataFrame */
+    .stDataFrame {{
+        border-radius: 8px;
+        overflow: hidden;
+        border: 1px solid {input_border};
+    }}
+    
+    /* Placeholder-like color for DataFrame */
+    [data-testid="stDataFrame"] div, [data-testid="stDataFrame"] span {{
+        color: #808495 !important;
+    }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -142,13 +232,8 @@ if btn_generate:
         st.warning("Faça o upload de pelo menos um arquivo PDF.")
     else:
         with st.spinner("Processando PDFs e gerando documento..."):
-            # Processar destinatários (remover linhas vazias e lidar com NaNs)
-            destinatarios = []
-            for _, row in edited_destinatarios.iterrows():
-                nome_val = str(row['nome']).strip() if pd.notna(row['nome']) else ""
-                emp_val = str(row['empresa']).strip() if pd.notna(row['empresa']) else ""
-                if nome_val and nome_val.lower() != "nan":
-                    destinatarios.append({"nome": nome_val, "empresa": emp_val})
+            # Os destinatários já foram coletados nos inputs dinâmicos
+            destinatarios = destinatarios_list
                     
             # Contexto para o template
             context = {
