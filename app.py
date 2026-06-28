@@ -167,6 +167,11 @@ st.markdown(f"""
         border-radius: 8px !important;
         transition: all 0.3s ease !important;
     }}
+    button[kind="primary"] p,
+    button[kind="primary"] span,
+    button[kind="primary"] div {{
+        color: {btn_primary_text} !important;
+    }}
     button[kind="primary"]:hover {{
         transform: translateY(-2px);
         box-shadow: 0 4px 15px rgba(23, 154, 73, 0.4) !important;

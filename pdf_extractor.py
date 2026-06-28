@@ -26,7 +26,7 @@ def parse_pdf_date(date_str):
         return f"{day}/{month}/{year}"
     return ""
 
-def _extract_title_block_descricao(raw_text):
+def _extract_title_block_descricao(raw_text, numero_folha=""):
     lines = raw_text.split('\n')
 
     folha_idx = None
@@ -65,96 +65,65 @@ def _extract_title_block_descricao(raw_text):
             continue
         meaningful.append(line)
 
-    if len(meaningful) < 5:
+    if len(meaningful) < 2:
         return None
 
-    # Support P (Pilar), V (Viga), L (Laje), F (Fundação), D (Detalhe), M (Montagem), etc.
-    PIECE_LINE_RE = re.compile(r'\b(?:P|V|L|F|D|M|PR|VS|BL|SC)(?:[0-9OOM]{1,4})\b', re.IGNORECASE)
-
-    # TYPE_RE matches the structural type: FORMA, ARMAÇÃO, etc.
-    # PAVILHÃO is NOT a type — it's a location prefix, handled separately
-    TYPE_RE = re.compile(
-        r'\b(FORMA|ARMA(?:ÇÃO|ÇAO|CAO)?|VIGA|DETALHE|PLANTA|CORTE|ELEVA(?:ÇÃO|ÇAO|CAO)?|MONTAGEM|DEXA)\b',
-        re.IGNORECASE
-    )
+    # Support P, V, L, F, D, M, PR, VS, BL, SC, and C (Consolo)
+    PIECE_LINE_RE = re.compile(r'\b(?:P|V|L|F|D|M|PR|VS|BL|SC|C)(?:[0-9OOM]{1,4})\b', re.IGNORECASE)
 
     # LOCATION_RE matches the location prefix (e.g. PAVILHÃO 2)
-    LOCATION_RE = re.compile(
-        r'\bPAVILH[ÃA]O\b',
-        re.IGNORECASE
-    )
+    LOCATION_RE = re.compile(r'\bPAVILH[ÃA]O\b', re.IGNORECASE)
 
-    # FORMA_ARMACAO_RE specifically matches the "FORMA E ARMAÇÃO (Nx)" pattern
+    # FORMA_ARMACAO_RE matches drawing types
     FORMA_ARMACAO_RE = re.compile(
-        r'FORMA\s+E?\s*ARMA[CÇ][AÃ]O\s*\(\d+x\)',
+        r'\b(?:FORMA\s+E?\s*ARMA[CÇ][AÃ]O|FORMA|ARMA[CÇ][AÃ]O|DETALHE|PLANTA|CORTE|ELEVA[CÇ][AÃ]O|MONTAGEM)\b(?:\s*\(\d+x\))?',
         re.IGNORECASE
     )
 
-    description_line = None
+    piece_line = None
+    location_line = None
     forma_line = None
 
-    for idx, line in enumerate(meaningful):
-        # Skip noise lines
-        if NOISE_RE.search(line):
-            continue
-
-        has_piece = PIECE_LINE_RE.search(line)
-        has_location = LOCATION_RE.search(line)
-        has_forma = FORMA_ARMACAO_RE.search(line)
-        has_type = TYPE_RE.search(line)
-
-        # Best case: line has location + piece + forma all together
-        # e.g. "PAVILHÃO 2 - P10 - FORMA E ARMAÇÃO (1x)"
-        if has_location and has_piece and has_forma:
-            return line
-
-        # Line has location + piece (e.g. "PAVILHÃO 2 - P10")
-        # Look ahead for the FORMA E ARMAÇÃO line
-        if has_location and has_piece:
-            description_line = line
-            # Search the next few meaningful lines for FORMA E ARMAÇÃO
-            for k in range(idx + 1, min(idx + 4, len(meaningful))):
-                next_line = meaningful[k]
-                if FORMA_ARMACAO_RE.search(next_line):
-                    forma_line = next_line
-                    break
-            if description_line:
-                break
-
-        # Line has piece + type but NOT location (e.g. "V207=V217 - FORMA E ARMAÇÃO (2x)")
-        if has_piece and has_type and not has_location:
-            if not NOISE_RE.search(line):
-                description_line = line
-                break
-
-    if description_line:
-        if forma_line:
-            return f"{description_line} - {forma_line}"
-        return description_line
-
-    # Second pass: look for piece-only line and type-only line separately
-    piece_line = None
-    type_line = None
-
     for line in meaningful:
-        if NOISE_RE.search(line):
-            continue
-        has_piece = PIECE_LINE_RE.search(line)
-        has_type = TYPE_RE.search(line)
+        # Check location
+        if LOCATION_RE.search(line) and not location_line:
+            location_line = line
+        
+        # Check piece
+        matches = PIECE_LINE_RE.findall(line)
+        if matches and not piece_line:
+            # We must filter out sheet numbers and units
+            is_valid = True
+            for match in matches:
+                m_upper = match.upper()
+                if m_upper in ['CM', 'MM', 'M', 'KG', 'KGF']:
+                    is_valid = False
+                    break
+                if numero_folha:
+                    nf_upper = numero_folha.upper()
+                    if m_upper == nf_upper or m_upper == nf_upper.replace('F', ''):
+                        is_valid = False
+                        break
+            if is_valid:
+                piece_line = line
+            
+        # Check forma/type
+        if FORMA_ARMACAO_RE.search(line) and not forma_line:
+            forma_line = line
 
-        if has_piece and not piece_line:
-            piece_line = line
-        elif has_type and not has_piece:
-            if not type_line:
-                type_line = line
-
-    if piece_line and type_line:
-        if type_line.upper() in piece_line.upper():
-            return piece_line
-        return f"{piece_line} - {type_line}"
-
+    # Now let's combine them intelligently
     if piece_line:
-        return piece_line
+        has_forma_in_piece = FORMA_ARMACAO_RE.search(piece_line)
+        has_location_in_piece = LOCATION_RE.search(piece_line) if location_line else True
+        
+        parts = []
+        if location_line and not has_location_in_piece:
+            parts.append(location_line)
+        parts.append(piece_line)
+        if forma_line and not has_forma_in_piece:
+            parts.append(forma_line)
+            
+        return " - ".join(parts)
 
     # Fallback to the original logic
     verific_idx = -1
@@ -244,11 +213,11 @@ def extract_data_from_pdf(file_stream, filename):
 
         data_folha = _extract_date_from_pymupdf(doc, raw_text)
 
-        descricao = _extract_title_block_descricao(raw_text)
+        descricao = _extract_title_block_descricao(raw_text, numero_folha)
 
         if not descricao:
             decoded = decode_pymupdf_garbage(raw_text)
-            descricao = _extract_title_block_descricao(decoded)
+            descricao = _extract_title_block_descricao(decoded, numero_folha)
 
     except Exception as e:
         print(f"Erro PyMuPDF no arquivo {filename}: {e}")
