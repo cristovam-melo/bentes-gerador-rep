@@ -29,13 +29,143 @@ def parse_pdf_date(date_str):
 def _extract_title_block_descricao(raw_text, numero_folha=""):
     lines = raw_text.split('\n')
 
+    # Support P, V, L, F, D, M, PR, VS, BL, SC, and C (Consolo)
+    PIECE_LINE_RE = re.compile(r'\b(?:P|V|L|F|D|M|PR|VS|BL|SC|C)(?:[0-9OOM]{1,4})\b', re.IGNORECASE)
+
+    # LOCATION_RE matches the location prefix (e.g. PAVILHÃO 2)
+    LOCATION_RE = re.compile(r'\bPAVILH[ÃA]O\b', re.IGNORECASE)
+
+    # FORMA_ARMACAO_RE matches drawing types
+    FORMA_ARMACAO_RE = re.compile(
+        r'\b(?:FORMA\s+E?\s*ARMA[CÇ][AÃ]O|FORMA|ARMA[CÇ][AÃ]O|DETALHE|PLANTA|CORTE|ELEVA[CÇ][AÃ]O|MONTAGEM)\b(?:\s*\(\d+x\))?',
+        re.IGNORECASE
+    )
+
+    # ── Early-detection: PDFs where title block has no FOLHA N. marker ──
+    # Scan all lines looking for a consecutive pair: piece description + drawing type.
+    # We skip lines that look like encoded garbage (too many non-printable chars).
+    GARBAGE_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\xff]')
+    # Pattern typical of PyMuPDF encoded title text (dollar signs + digits + special chars)
+    ENCODED_TITLE_RE = re.compile(r'[\$%&@#]{1,}\d|\d[\$%&@#]')
+
+    def is_garbage_line(text):
+        """Return True if line contains too many non-printable/control characters."""
+        if not text:
+            return False
+        garbage_count = len(GARBAGE_RE.findall(text))
+        # Also detect lines that look like encoded PyMuPDF text ($ mixed with digits)
+        has_encoded_pattern = bool(ENCODED_TITLE_RE.search(text))
+        return (garbage_count >= 1 or has_encoded_pattern)
+
+
+    # Build a clean list of (original_index, text) ignoring garbage and pure-number lines
+    NUM_ONLY_RE = re.compile(r'^\d+([.,]\d+)?\s*(mm|cm|m|GPa|MPa|kg|kgf)?$')
+    clean_indexed = []
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if is_garbage_line(stripped):
+            continue
+        if NUM_ONLY_RE.match(stripped):
+            continue
+        clean_indexed.append((idx, stripped))
+
+    # Walk clean lines to find best (piece, forma) pair
+    best_piece = None
+    best_forma = None
+    best_location = None
+
+    def piece_score(text):
+        """Higher score = better/more descriptive piece title."""
+        score = 0
+        # Contains a structural keyword → likely the main title
+        if re.search(r'\b(VIGA|PILAR|LAJE|COLUNA|VIGA BALDRAME|CONSOLO)\b', text, re.IGNORECASE):
+            score += 10
+        # Contains '=' → multiple equivalent pieces (rich title)
+        if '=' in text:
+            score += 5
+        # Contains (Nx) multiplier
+        if re.search(r'\(\d+x\)', text):
+            score += 3
+        # Has multiple digits/numbers
+        digit_count = len(re.findall(r'\d+', text))
+        score += min(digit_count, 3)
+        # Longer text is generally more descriptive
+        score += min(len(text) // 5, 4)
+        return score
+
+    for ci, (idx, text) in enumerate(clean_indexed):
+        if PIECE_LINE_RE.search(text):
+            matches = PIECE_LINE_RE.findall(text)
+            valid = all(m.upper() not in ('CM', 'MM', 'M', 'KG', 'KGF') for m in matches)
+            if not valid:
+                continue
+            # Look ahead within the next 3 clean lines for a forma line
+            lookahead = clean_indexed[ci + 1: ci + 4]
+            found_forma = None
+            for _, next_text in lookahead:
+                if FORMA_ARMACAO_RE.search(next_text):
+                    found_forma = next_text
+                    break
+            # If no clean forma found, check raw lines directly after this line
+            # (handles cases where ARMAÇÃO/FORMA is in garbage-encoded text)
+            if found_forma is None:
+                for raw_offset in range(1, 4):
+                    raw_idx = idx + raw_offset
+                    if raw_idx < len(lines):
+                        raw_line = lines[raw_idx].strip()
+                        if raw_line and is_garbage_line(raw_line):
+                            decoded_line = decode_pymupdf_garbage(raw_line)
+                            if FORMA_ARMACAO_RE.search(decoded_line):
+                                # Use a canonical form label based on what was decoded
+                                if re.search(r'ARMA', decoded_line, re.IGNORECASE):
+                                    found_forma = 'ARMAÇÃO'
+                                elif re.search(r'FORMA', decoded_line, re.IGNORECASE):
+                                    found_forma = 'FORMA'
+                                else:
+                                    found_forma = decoded_line.strip()
+                                break
+                        elif raw_line and not NUM_ONLY_RE.match(raw_line):
+                            # Hit a non-garbage, non-number line that's not a forma - stop
+                            if not FORMA_ARMACAO_RE.search(raw_line):
+                                break
+            if found_forma:
+                # Check location in surrounding lines
+                loc = None
+                lookbehind = clean_indexed[max(0, ci - 2): ci]
+                for _, prev_text in lookbehind:
+                    if LOCATION_RE.search(prev_text):
+                        loc = prev_text
+                        break
+                # Keep the highest-scoring piece title
+                if best_piece is None or piece_score(text) > piece_score(best_piece):
+                    best_piece = text
+                    best_forma = found_forma
+                    best_location = loc
+
+
+
+    if best_piece and best_forma:
+        combined_parts = []
+        if best_location:
+            combined_parts.append(best_location)
+        combined_parts.append(best_piece)
+        # Only append forma if it's different from piece
+        if best_forma != best_piece:
+            combined_parts.append(best_forma)
+        return " - ".join(combined_parts)
+
+
     folha_idx = None
     for i, line in enumerate(lines):
         if 'FOLHA N.' in line:
             folha_idx = i
             break
+
+    # If no FOLHA N. found, process all lines (some PDFs omit this label)
     if folha_idx is None:
-        return None
+        folha_idx = -1
 
     LABELS = {'CLIENTE', 'OBRA', 'DATA', 'TITULO', 'DESENHO',
               'REVISÃO', 'REVISAO', 'VERIFICAÇÃO', 'VERIFICACAO',
@@ -67,18 +197,6 @@ def _extract_title_block_descricao(raw_text, numero_folha=""):
 
     if len(meaningful) < 2:
         return None
-
-    # Support P, V, L, F, D, M, PR, VS, BL, SC, and C (Consolo)
-    PIECE_LINE_RE = re.compile(r'\b(?:P|V|L|F|D|M|PR|VS|BL|SC|C)(?:[0-9OOM]{1,4})\b', re.IGNORECASE)
-
-    # LOCATION_RE matches the location prefix (e.g. PAVILHÃO 2)
-    LOCATION_RE = re.compile(r'\bPAVILH[ÃA]O\b', re.IGNORECASE)
-
-    # FORMA_ARMACAO_RE matches drawing types
-    FORMA_ARMACAO_RE = re.compile(
-        r'\b(?:FORMA\s+E?\s*ARMA[CÇ][AÃ]O|FORMA|ARMA[CÇ][AÃ]O|DETALHE|PLANTA|CORTE|ELEVA[CÇ][AÃ]O|MONTAGEM)\b(?:\s*\(\d+x\))?',
-        re.IGNORECASE
-    )
 
     piece_line = None
     location_line = None
@@ -247,4 +365,3 @@ def extract_data_from_pdf(file_stream, filename):
         "descricao": descricao,
         "data_folha": data_folha
     }
-
